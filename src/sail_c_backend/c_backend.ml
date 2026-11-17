@@ -430,6 +430,28 @@ end) : CONFIG = struct
     let no_change = AE_app (Sail_function id, args, typ) in
     let args = List.map (c_aval ctx) args in
     let extern = if ctx_is_extern id ctx then ctx_get_extern id ctx else failwith "Not extern" in
+    let int_cval n = AV_cval (V_lit (V_int (Z.of_int n), CT_fint 64), atom_typ (nint n)) in
+    (* Zero or sign extend a bitvector of at most 64 bits to a length that is
+       not a constant, for example to bits(xlen) with an abstract xlen. *)
+    let extend_to_sbits kind arg len =
+      let len_is_fint64 =
+        match len with
+        | AV_cval (c, _) -> is_fint64 c
+        | _ -> (
+            try ctyp_equal (convert_typ ctx (aval_typ len)) (CT_fint 64) with _ -> false
+          )
+      in
+      match (arg, try convert_typ ctx typ with _ -> CT_unit) with
+      | AV_cval (v, _), CT_sbits 64 when len_is_fint64 -> (
+          let f suffix = Pure_extern (mk_id ("sail_" ^ kind ^ "_extend_" ^ suffix), Some typ) in
+          match cval_ctyp v with
+          | CT_fbits n when kind = "sign" -> AE_app (f "fbits_sbits", [arg; int_cval n; len], typ)
+          | CT_fbits _ -> AE_app (f "fbits_sbits", [arg; len], typ)
+          | CT_sbits _ -> AE_app (f "sbits_sbits", [arg; len], typ)
+          | _ -> no_change
+        )
+      | _ -> no_change
+    in
 
     match (extern, args) with
     | "eq_bits", [AV_cval (v1, _); AV_cval (v2, _)] when ctyp_equal (cval_ctyp v1) (cval_ctyp v2) -> (
@@ -451,17 +473,17 @@ end) : CONFIG = struct
             AE_val (AV_cval (V_lit (V_bitvector (Sail_lib.zeros (Z.of_int n)), CT_fbits n), typ))
         | _ -> no_change
       )
-    | "zero_extend", [AV_cval (v, _); _] -> (
+    | "zero_extend", [(AV_cval (v, _) as arg); len] -> (
         match destruct_bitvector ctx.tc_env typ with
         | Some (Nexp_aux (Nexp_constant n, _)) when Z.leq n (Z.of_int 64) ->
             AE_val (AV_cval (V_call (Zero_extend (Z.to_int n), [v]), typ))
-        | _ -> no_change
+        | _ -> extend_to_sbits "zero" arg len
       )
-    | "sign_extend", [AV_cval (v, _); _] -> (
+    | "sign_extend", [(AV_cval (v, _) as arg); len] -> (
         match destruct_bitvector ctx.tc_env typ with
         | Some (Nexp_aux (Nexp_constant n, _)) when Z.leq n (Z.of_int 64) ->
             AE_val (AV_cval (V_call (Sign_extend (Z.to_int n), [v]), typ))
-        | _ -> no_change
+        | _ -> extend_to_sbits "sign" arg len
       )
     | "lteq", [AV_cval (v1, _); AV_cval (v2, _)] -> AE_val (AV_cval (V_call (Ilteq, [v1; v2]), typ))
     | "gteq", [AV_cval (v1, _); AV_cval (v2, _)] -> AE_val (AV_cval (V_call (Igteq, [v1; v2]), typ))
@@ -528,6 +550,19 @@ end) : CONFIG = struct
         | _, _ -> no_change
       )
     | "print_int", [_; AV_cval _] -> AE_app (Extern (mk_id "fast_print_int", None), args, typ)
+    (* The minimum or maximum of two 64-bit integers is a 64-bit integer. *)
+    | (("min_int" | "max_int") as f), [AV_cval (op1, _); AV_cval (op2, _)] when is_fint64 op1 && is_fint64 op2 ->
+        let int64_typ = range_typ (nconstant (min_int 64)) (nconstant (max_int 64)) in
+        AE_app (Pure_extern (mk_id ("fast_" ^ f), Some int64_typ), args, typ)
+    (* unsigned of a bitvector of at most 64 bits whose result can be larger
+       than an int64_t, for example unsigned(bits(64)). This avoids a
+       conversion to lbits. *)
+    | "sail_unsigned", [AV_cval (v, _)] when not (result_fits_int64 ctx typ) -> (
+        match cval_ctyp v with
+        | CT_fbits _ -> AE_app (Pure_extern (mk_id "sail_unsigned_fbits", Some typ), args, typ)
+        | CT_sbits _ -> AE_app (Pure_extern (mk_id "sail_unsigned_sbits", Some typ), args, typ)
+        | _ -> no_change
+      )
     | "undefined_bit", _ -> AE_val (AV_cval (V_lit (V_bitvector (Sail_lib.zeros (Z.of_int 1)), CT_fbits 1), typ))
     | "undefined_bool", _ -> AE_val (AV_cval (V_lit (V_bool false, CT_bool), typ))
     | _, _ -> no_change

@@ -896,6 +896,62 @@ static inline void sail_unsigned(sail_int *rop, const lbits op)
     sail_unsigned_slow(rop, op);
   }
 }
+
+static inline mach_int fast_min_int(const mach_int op1, const mach_int op2)
+{
+  return op1 < op2 ? op1 : op2;
+}
+
+static inline mach_int fast_max_int(const mach_int op1, const mach_int op2)
+{
+  return op1 > op2 ? op1 : op2;
+}
+
+/* Extend a bitvector of at most 64 bits to len bits, where len <= 64. */
+static inline sbits sail_zero_extend_fbits_sbits(const fbits op, const mach_int len)
+{
+  sbits rop = {(uint64_t)len, op};
+  return rop;
+}
+
+static inline sbits sail_zero_extend_sbits_sbits(const sbits op, const mach_int len)
+{
+  sbits rop = {(uint64_t)len, op.bits};
+  return rop;
+}
+
+static inline sbits sail_sign_extend_fbits_sbits(const fbits op, const mach_int op_len, const mach_int len)
+{
+  sbits rop = {(uint64_t)len, 0};
+  if (op_len > 0) {
+    unsigned sh = 64 - (unsigned)op_len;
+    rop.bits = (uint64_t)((int64_t)(op << sh) >> sh);
+    if (len < 64) rop.bits &= (UINT64_C(1) << len) - 1;
+  }
+  return rop;
+}
+
+static inline sbits sail_sign_extend_sbits_sbits(const sbits op, const mach_int len)
+{
+  return sail_sign_extend_fbits_sbits(op.bits, (mach_int)op.len, len);
+}
+
+void sail_unsigned_u64_slow(sail_int *rop, const uint64_t op);
+
+static inline void sail_unsigned_fbits(sail_int *rop, const fbits op)
+{
+  if (SAIL_LIKELY(op <= (uint64_t)INT64_MAX)) {
+    sail_int_set_small(rop, (int64_t)op);
+  } else {
+    sail_unsigned_u64_slow(rop, op);
+  }
+}
+
+static inline void sail_unsigned_sbits(sail_int *rop, const sbits op)
+{
+  sail_unsigned_fbits(rop, op.bits);
+}
+
 void sail_signed(sail_int *rop, const lbits op);
 
 mach_int fast_signed(const fbits, const uint64_t);

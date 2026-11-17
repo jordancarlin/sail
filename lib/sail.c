@@ -1119,6 +1119,12 @@ void sail_unsigned_slow(sail_int *rop, const lbits op)
   sail_int_take_mpz(rop, sail_lib_tmp1);
 }
 
+void sail_unsigned_u64_slow(sail_int *rop, const uint64_t op)
+{
+  mpz_set_ui(sail_lib_tmp1, op);
+  sail_int_take_mpz(rop, sail_lib_tmp1);
+}
+
 void sail_signed(sail_int *rop, const lbits op)
 {
   if (op.len == 0) {
