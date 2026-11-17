@@ -354,6 +354,81 @@ static inline void CONVERT_OF(sail_int, mach_int)(sail_int *rop, const mach_int 
   sail_int_set_small(rop, op);
 }
 
+/*
+ * 128-bit machine integers, for integer ranges that do not fit in 64 bits
+ * but fit in 128 bits, for example unsigned(bits(64)) * 4. The type range
+ * makes sure that the values fit. The C backend uses these only with the
+ * --c-int128 option, for C compilers that have __int128.
+ */
+#ifdef __SIZEOF_INT128__
+typedef __int128 mach_int128;
+
+static inline bool EQUAL(mach_int128)(const mach_int128 op1, const mach_int128 op2)
+{
+  return op1 == op2;
+}
+
+static inline mach_int128 CONVERT_OF(mach_int128, mach_int)(const mach_int op)
+{
+  return op;
+}
+
+static inline mach_int CONVERT_OF(mach_int, mach_int128)(const mach_int128 op)
+{
+  return (mach_int)op;
+}
+
+void sail_int_set_i128_slow(sail_int *rop, const mach_int128 op);
+mach_int128 sail_int_get_i128_slow(const sail_int op);
+
+static inline void CONVERT_OF(sail_int, mach_int128)(sail_int *rop, const mach_int128 op)
+{
+  if (SAIL_LIKELY(op >= INT64_MIN && op <= INT64_MAX)) {
+    sail_int_set_small(rop, (int64_t)op);
+  } else {
+    sail_int_set_i128_slow(rop, op);
+  }
+}
+
+static inline void CREATE_OF(sail_int, mach_int128)(sail_int *rop, const mach_int128 op)
+{
+  rop->val = 0;
+  rop->big = NULL;
+  CONVERT_OF(sail_int, mach_int128)(rop, op);
+}
+
+static inline void RECREATE_OF(sail_int, mach_int128)(sail_int *rop, const mach_int128 op)
+{
+  CONVERT_OF(sail_int, mach_int128)(rop, op);
+}
+
+static inline mach_int128 CONVERT_OF(mach_int128, sail_int)(const sail_int op)
+{
+  if (SAIL_LIKELY(op.big == NULL)) return op.val;
+  return sail_int_get_i128_slow(op);
+}
+
+static inline mach_int128 add_int128(const mach_int128 op1, const mach_int128 op2)
+{
+  return op1 + op2;
+}
+
+static inline mach_int128 sub_int128(const mach_int128 op1, const mach_int128 op2)
+{
+  return op1 - op2;
+}
+
+static inline mach_int128 mult_int128(const mach_int128 op1, const mach_int128 op2)
+{
+  return op1 * op2;
+}
+
+static inline mach_int128 sail_unsigned128_fbits(const uint64_t op)
+{
+  return (mach_int128)op;
+}
+#endif
+
 /* Same as mpz_get_si when the value does not fit. */
 static inline mach_int CONVERT_OF(mach_int, sail_int)(const sail_int op)
 {
@@ -974,6 +1049,13 @@ static inline void sail_unsigned_sbits(sail_int *rop, const sbits op)
 {
   sail_unsigned_fbits(rop, op.bits);
 }
+
+#ifdef __SIZEOF_INT128__
+static inline mach_int128 sail_unsigned128_sbits(const sbits op)
+{
+  return (mach_int128)op.bits;
+}
+#endif
 
 void sail_signed(sail_int *rop, const lbits op);
 

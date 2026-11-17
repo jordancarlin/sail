@@ -75,6 +75,10 @@ let optimize_alias = ref false
 let optimize_fixed_int = ref false
 let optimize_fixed_bits = ref false
 
+(* Use __int128 for integer ranges that fit in 128 bits but not in 64 bits.
+   Not all C compilers have __int128, so this is off by default. *)
+let use_int128 = ref false
+
 let ngensym = symbol_generator ()
 
 let c_error ?loc:(l = Parse_ast.Unknown) message = raise (Reporting.err_general l ("\nC backend: " ^ message))
@@ -93,7 +97,7 @@ let min_int n = Z.neg (Z.shift_left Z.one (n - 1))
 let rec is_stack_ctyp ctx ctyp =
   match ctyp with
   | CT_fbits _ | CT_sbits _ | CT_unit | CT_bool | CT_enum _ -> true
-  | CT_fint n -> n <= 64
+  | CT_fint n -> n <= 128
   | CT_lint when !optimize_fixed_int -> true
   | CT_lint -> false
   | CT_lbits when !optimize_fixed_bits -> true
@@ -217,24 +221,23 @@ end) : CONFIG = struct
     | Typ_app (id, _) when string_of_id id = "range" || string_of_id id = "atom" || string_of_id id = "implicit" -> (
         match destruct_range Env.empty typ with
         | None -> assert false (* Checked if range type in guard *)
-        | Some (kids, constr, n, m) -> (
+        | Some (kids, constr, n, m) ->
             let ctx =
               {
                 ctx with
                 local_env = add_existential Parse_ast.Unknown (List.map (mk_kopt K_int) kids) constr ctx.local_env;
               }
             in
-            match (nexp_simp n, nexp_simp m) with
-            | Nexp_aux (Nexp_constant n, _), Nexp_aux (Nexp_constant m, _)
-              when Z.leq (min_int 64) n && Z.leq m (max_int 64) ->
-                CT_fint 64
-            | n, m ->
-                if
-                  prove __POS__ ctx.local_env (nc_lteq (nconstant (min_int 64)) n)
-                  && prove __POS__ ctx.local_env (nc_lteq m (nconstant (max_int 64)))
-                then CT_fint 64
-                else CT_lint
-          )
+            let fits bits n m =
+              match (n, m) with
+              | Nexp_aux (Nexp_constant n, _), Nexp_aux (Nexp_constant m, _) ->
+                  Z.leq (min_int bits) n && Z.leq m (max_int bits)
+              | n, m ->
+                  prove __POS__ ctx.local_env (nc_lteq (nconstant (min_int bits)) n)
+                  && prove __POS__ ctx.local_env (nc_lteq m (nconstant (max_int bits)))
+            in
+            let n = nexp_simp n and m = nexp_simp m in
+            if fits 64 n m then CT_fint 64 else if !use_int128 && fits 128 n m then CT_fint 128 else CT_lint
       )
     | Typ_app (id, [A_aux (A_typ typ, _)]) when string_of_id id = "list" -> CT_list (ctyp_suprema (convert_typ ctx typ))
     (* When converting a sail bitvector type into C, we have three options in order of efficiency:
@@ -412,6 +415,10 @@ end) : CONFIG = struct
 
   let is_fint64 v = match cval_ctyp v with CT_fint 64 | CT_constant _ -> true | _ -> false
 
+  let is_fint v = match cval_ctyp v with CT_fint _ | CT_constant _ -> true | _ -> false
+
+  let result_fits_int128 ctx typ = try ctyp_equal (convert_typ ctx typ) (CT_fint 128) with _ -> false
+
   (* True if typ is a range that fits in a 64-bit signed integer. *)
   let result_fits_int64 ctx typ =
     (try ctyp_equal (convert_typ ctx typ) (CT_fint 64) with _ -> false)
@@ -537,9 +544,14 @@ end) : CONFIG = struct
           )
         | None -> no_change
       )
-    | (("add_int" | "sub_int") as f), [AV_cval (op1, _); AV_cval (op2, _)] ->
+    | (("add_int" | "sub_int") as f), [AV_cval (op1, _); AV_cval (op2, _)] when result_fits_int64 ctx typ ->
         let f = if f = "add_int" then Iadd else Isub in
-        if result_fits_int64 ctx typ then AE_val (AV_cval (V_call (f, [op1; op2]), typ)) else no_change
+        AE_val (AV_cval (V_call (f, [op1; op2]), typ))
+    (* Add, subtract and multiply in 128 bits when the result fits. *)
+    | (("add_int" | "sub_int" | "mult_int") as f), [AV_cval (op1, _); AV_cval (op2, _)]
+      when is_fint op1 && is_fint op2 && result_fits_int128 ctx typ ->
+        AE_app (Pure_extern (mk_id (f ^ "128"), Some typ), args, typ)
+    | ("add_int" | "sub_int"), _ -> no_change
     (* Multiply and divide on machine integers when the result fits in 64 bits
        and, for division, the divisor cannot be zero. *)
     | (("mult_int" | "tdiv_int" | "tmod_int") as f), [AV_cval (op1, _); AV_cval (op2, typ2)]
@@ -560,7 +572,7 @@ end) : CONFIG = struct
             else no_change
         | _, _ -> no_change
       )
-    | "print_int", [_; AV_cval _] -> AE_app (Extern (mk_id "fast_print_int", None), args, typ)
+    | "print_int", [_; AV_cval (v, _)] when is_fint64 v -> AE_app (Extern (mk_id "fast_print_int", None), args, typ)
     (* The minimum or maximum of two 64-bit integers is a 64-bit integer. *)
     | (("min_int" | "max_int") as f), [AV_cval (op1, _); AV_cval (op2, _)] when is_fint64 op1 && is_fint64 op2 ->
         let int64_typ = range_typ (nconstant (min_int 64)) (nconstant (max_int 64)) in
@@ -568,6 +580,12 @@ end) : CONFIG = struct
     (* unsigned of a bitvector of at most 64 bits whose result can be larger
        than an int64_t, for example unsigned(bits(64)). This avoids a
        conversion to lbits. *)
+    | "sail_unsigned", [AV_cval (v, _)] when result_fits_int128 ctx typ -> (
+        match cval_ctyp v with
+        | CT_fbits _ -> AE_app (Pure_extern (mk_id "sail_unsigned128_fbits", Some typ), args, typ)
+        | CT_sbits _ -> AE_app (Pure_extern (mk_id "sail_unsigned128_sbits", Some typ), args, typ)
+        | _ -> no_change
+      )
     | "sail_unsigned", [AV_cval (v, _)] when not (result_fits_int64 ctx typ) -> (
         match cval_ctyp v with
         | CT_fbits _ -> AE_app (Pure_extern (mk_id "sail_unsigned_fbits", Some typ), args, typ)
@@ -1103,6 +1121,7 @@ module Codegen (Config : CODEGEN_CONFIG) = struct
     | CT_bool -> "bool"
     | CT_fbits _ -> "uint64_t"
     | CT_sbits _ -> "sbits"
+    | CT_fint n when n > 64 -> "mach_int128"
     | CT_fint _ -> "int64_t"
     | CT_constant _ -> "int64_t"
     | CT_lint -> "sail_int"
@@ -1129,6 +1148,7 @@ module Codegen (Config : CODEGEN_CONFIG) = struct
     | CT_bool -> "bool"
     | CT_fbits _ -> "fbits"
     | CT_sbits _ -> "sbits"
+    | CT_fint n when n > 64 -> "mach_int128"
     | CT_fint _ -> "mach_int"
     | CT_constant _ -> "mach_int"
     | CT_lint -> "sail_int"
@@ -1164,6 +1184,11 @@ module Codegen (Config : CODEGEN_CONFIG) = struct
   let sgen_value : Ast.value -> string = function
     | V_bitvector bv when Z.equal (Sail_lib.length_bits bv) Z.zero -> "UINT64_C(0)"
     | V_bitvector bv -> "UINT64_C(" ^ Sail_lib.string_of_bits bv ^ ")"
+    | V_int i when !use_int128 && (Z.lt i (min_int 64) || Z.gt i (max_int 64)) ->
+        (* A 128-bit literal, as high and low 64-bit halves. *)
+        let hi = Z.shift_right i 64 and lo = Z.logand i (Z.pred (Z.shift_left Z.one 64)) in
+        sprintf "((mach_int128)INT64_C(%s) * ((mach_int128)1 << 64) + (mach_int128)UINT64_C(%s))" (Z.to_string hi)
+          (Z.to_string lo)
     | V_int i -> if Z.equal i (min_int 64) then "INT64_MIN" else "INT64_C(" ^ Z.to_string i ^ ")"
     | V_bool true -> "true"
     | V_bool false -> "false"

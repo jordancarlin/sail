@@ -127,6 +127,10 @@ let c_options =
         ],
       "turn on optimizations for C/C++ compilation"
     );
+    ( Flag.create ~prefix:["c"] "int128",
+      Arg.Set C_backend.use_int128,
+      "use __int128 for integer ranges that fit in 128 bits but not in 64 bits"
+    );
     ( Flag.create ~prefix:["c"] ~hide_prefix:true "Ofixed_int",
       Arg.Set C_backend.optimize_fixed_int,
       "assume fixed size integers rather than GMP arbitrary precision integers"

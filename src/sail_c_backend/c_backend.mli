@@ -75,6 +75,7 @@ val optimize_hoist_allocations : bool ref
 val optimize_alias : bool ref
 val optimize_fixed_int : bool ref
 val optimize_fixed_bits : bool ref
+val use_int128 : bool ref
 
 module type CODEGEN_CONFIG = sig
   (** A list of includes for the generated C file *)

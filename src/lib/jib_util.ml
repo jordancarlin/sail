@@ -660,6 +660,7 @@ let rec ctyp_unify l ctyp1 ctyp2 =
   | CT_fbits n, CT_sbits m when n <= m -> KBindings.empty
   | CT_lint, CT_fint _ -> KBindings.empty
   | CT_fint _, CT_lint -> KBindings.empty
+  | CT_fint _, CT_fint _ -> KBindings.empty
   | CT_lint, CT_constant _ -> KBindings.empty
   | CT_constant _, CT_lint -> KBindings.empty
   | CT_fint _, CT_constant _ -> KBindings.empty

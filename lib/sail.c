@@ -294,6 +294,27 @@ bool EQUAL(mach_int)(const mach_int op1, const mach_int op2)
   return op1 == op2;
 }
 
+#ifdef __SIZEOF_INT128__
+static void sail_int_take_mpz(sail_int *rop, mpz_t op);
+
+void sail_int_set_i128_slow(sail_int *rop, const mach_int128 op)
+{
+  unsigned __int128 mag = op < 0 ? -(unsigned __int128)op : (unsigned __int128)op;
+  mpz_set_ui(sail_lib_tmp1, (uint64_t)(mag >> 64));
+  mpz_mul_2exp(sail_lib_tmp1, sail_lib_tmp1, 64);
+  mpz_add_ui(sail_lib_tmp1, sail_lib_tmp1, (uint64_t)mag);
+  if (op < 0) mpz_neg(sail_lib_tmp1, sail_lib_tmp1);
+  sail_int_take_mpz(rop, sail_lib_tmp1);
+}
+
+mach_int128 sail_int_get_i128_slow(const sail_int op)
+{
+  unsigned __int128 mag = mpz_getlimbn(op.big, 0);
+  if (mpz_size(op.big) > 1) mag |= (unsigned __int128)mpz_getlimbn(op.big, 1) << 64;
+  return mpz_sgn(op.big) < 0 ? -(mach_int128)mag : (mach_int128)mag;
+}
+#endif
+
 /*
  * A pool of initialized mpz_t values for the big field of sail_int
  * and lbits. Values switch between small and big often, so this

@@ -86,6 +86,12 @@ class ExecCTests(_ExecCBase):
             "undefined behavior sanitised", "-O2 -fsanitize=undefined", "-O", False
         )
         self._run_c_tests("address sanitised", "-O2 -fsanitize=address -g", "-O", False)
+        self._run_c_tests(
+            "__int128 undefined behavior sanitised",
+            "-O2 -fsanitize=undefined",
+            "-O --c-int128",
+            False,
+        )
 
 
 @suite("exec.cpp", _SUITE_DIR)
@@ -121,6 +127,15 @@ class ExecCppTests(_ExecCBase):
             "-O2",
             "-O",
             True,
+            compiler="c++",
+            actually_cpp=True,
+            expected_failures=self._xfails,
+        )
+        self._run_c_tests(
+            "optimized C++ with __int128",
+            "-O2",
+            "-O --c-int128",
+            False,
             compiler="c++",
             actually_cpp=True,
             expected_failures=self._xfails,
