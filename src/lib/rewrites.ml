@@ -2625,14 +2625,16 @@ let rewrite_ast_pat_lits add_types rewrite_lit env ast =
                 annot
               )
       )
-    | Pat_when (pat, guard, exp) ->
+    | Pat_when (pat, guard, exp) -> (
         let pat = fold_pat { id_pat_alg with p_aux = rewrite_pat } pat in
         let guard_annot = (fst annot, mk_tannot (env_of exp) bool_typ) in
-        Pat_aux
-          ( Pat_when
-              (pat, List.fold_left (fun g g' -> E_aux (E_app (mk_and_bool (), [g; g']), guard_annot)) guard !guards, exp),
-            annot
-          )
+        let mk_and g g' = E_aux (E_app (mk_and_bool (), [g; g']), guard_annot) in
+        (* Test the literals before the guard, as the guard is only
+           evaluated when the pattern matches. *)
+        match !guards with
+        | [] -> Pat_aux (Pat_when (pat, guard, exp), annot)
+        | g :: gs -> Pat_aux (Pat_when (pat, mk_and (List.fold_left mk_and g gs) guard, exp), annot)
+      )
   in
 
   let rewrite_funcl (FCL_aux (FCL_funcl (id, pexp), (l, annot))) =
