@@ -585,6 +585,33 @@ static inline void sail_lbits_set_small(lbits *rop, const uint64_t len, const ui
   rop->word = op;
 }
 
+/*
+ * Byte vector conversions. Each element of bytes holds one byte. The
+ * least significant byte is at index 0.
+ */
+static inline uint64_t sail_from_bytes_le_u64(const uint64_t n, const uint64_t *bytes)
+{
+  uint64_t w = 0;
+  for (uint64_t i = 0; i < n; i++) w |= (bytes[i] & 0xff) << (8 * i);
+  return w;
+}
+
+static inline sbits sail_from_bytes_le_sbits(const uint64_t n, const uint64_t *bytes)
+{
+  sbits rop;
+  rop.len = 8 * n;
+  rop.bits = sail_from_bytes_le_u64(n, bytes);
+  return rop;
+}
+
+static inline void sail_to_bytes_le_u64(uint64_t *bytes, const uint64_t n, const uint64_t op)
+{
+  for (uint64_t i = 0; i < n; i++) bytes[i] = (op >> (8 * i)) & 0xff;
+}
+
+void sail_from_bytes_le_slow(lbits *rop, const uint64_t n, const uint64_t *bytes);
+void sail_to_bytes_le_slow(uint64_t *bytes, const uint64_t n, const lbits op);
+
 /* Set rop to the zero-extended value op, with any length. */
 void sail_lbits_set_u64_slow(lbits *rop, const uint64_t len, const uint64_t op);
 
@@ -594,6 +621,24 @@ static inline void sail_lbits_set_u64(lbits *rop, const uint64_t len, const uint
     sail_lbits_set_small(rop, len, op & sail_mask64(len));
   } else {
     sail_lbits_set_u64_slow(rop, len, op);
+  }
+}
+
+static inline void sail_from_bytes_le(lbits *rop, const uint64_t n, const uint64_t *bytes)
+{
+  if (SAIL_LIKELY(n <= 8)) {
+    sail_lbits_set_small(rop, 8 * n, sail_from_bytes_le_u64(n, bytes));
+  } else {
+    sail_from_bytes_le_slow(rop, n, bytes);
+  }
+}
+
+static inline void sail_to_bytes_le(uint64_t *bytes, const uint64_t n, const lbits op)
+{
+  if (SAIL_LIKELY(op.len <= 64)) {
+    sail_to_bytes_le_u64(bytes, n, op.word);
+  } else {
+    sail_to_bytes_le_slow(bytes, n, op);
   }
 }
 

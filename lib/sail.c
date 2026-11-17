@@ -693,6 +693,28 @@ static inline mpz_ptr sail_lbits_make_big(lbits *rop, const uint64_t len)
   return rop->big;
 }
 
+void sail_from_bytes_le_slow(lbits *rop, const uint64_t n, const uint64_t *bytes)
+{
+  unsigned char *buf = (unsigned char *)sail_malloc(n);
+  for (uint64_t i = 0; i < n; i++) buf[i] = (unsigned char)bytes[i];
+  mpz_t tmp;
+  mpz_init(tmp);
+  mpz_import(tmp, n, -1, 1, 0, 0, buf);
+  sail_lbits_set_mpz(rop, 8 * n, tmp);
+  mpz_clear(tmp);
+  sail_free(buf);
+}
+
+void sail_to_bytes_le_slow(uint64_t *bytes, const uint64_t n, const lbits op)
+{
+  sail_mpz_view v;
+  mpz_srcptr z = sail_lbits_view(&v, op);
+  for (uint64_t i = 0; i < n; i++) {
+    const uint64_t bit = 8 * i;
+    bytes[i] = (mpz_getlimbn(z, bit / GMP_NUMB_BITS) >> (bit % GMP_NUMB_BITS)) & 0xff;
+  }
+}
+
 void sail_lbits_set_mpz(lbits *rop, const mp_bitcnt_t len, const mpz_t op)
 {
   if (len <= 64) {
