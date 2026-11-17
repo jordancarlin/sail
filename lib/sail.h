@@ -65,9 +65,15 @@ static inline void *sail_malloc(size_t size)
   return malloc(size);
 }
 
+/*
+ * The shared empty string. CREATE(sail_string) uses it, so that a new
+ * string needs no allocation. It is never freed or written.
+ */
+extern char sail_empty_string[1];
+
 static inline void sail_free(void *ptr)
 {
-  free(ptr);
+  if (ptr != (void *)sail_empty_string) free(ptr);
 }
 
 #define sail_new(type) (type *)(sail_malloc(sizeof(type)))
@@ -164,6 +170,12 @@ bool eq_string(const_sail_string, const_sail_string);
 bool EQUAL(sail_string)(const_sail_string, const_sail_string);
 
 void concat_str(sail_string *stro, const_sail_string str1, const_sail_string str2);
+
+/*
+ * Resize a string buffer to at least size bytes. The contents are kept
+ * only if the buffer is not sail_empty_string.
+ */
+sail_string sail_string_reserve(sail_string str, size_t size);
 bool string_startswith(const_sail_string s, const_sail_string prefix);
 
 /* ***** Sail integers ***** */

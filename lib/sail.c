@@ -57,6 +57,26 @@
 
 #include"sail.h"
 
+#if defined(__GLIBC__)
+#include<malloc.h>
+#endif
+
+char sail_empty_string[1] = "";
+
+/*
+ * Resize a string buffer to at least size bytes. If the buffer is
+ * already large enough, keep it. Most strings are short, so this
+ * removes most realloc calls.
+ */
+sail_string sail_string_reserve(sail_string str, size_t size)
+{
+  if (str == NULL || str == sail_empty_string) return (sail_string)sail_malloc(size);
+#if defined(__GLIBC__)
+  if (malloc_usable_size(str) >= size) return str;
+#endif
+  return (sail_string)realloc(str, size);
+}
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -177,24 +197,21 @@ bool UNDEFINED(bool)(const unit u) {
 
 void CREATE(sail_string)(sail_string *str)
 {
-  char *istr = (char *) sail_malloc(1 * sizeof(char));
-  istr[0] = '\0';
-  *str = istr;
+  *str = sail_empty_string;
 }
 
 void RECREATE(sail_string)(sail_string *str)
 {
   sail_free(*str);
-  char *istr = (char *) sail_malloc(1 * sizeof(char));
-  istr[0] = '\0';
-  *str = istr;
+  *str = sail_empty_string;
 }
 
 void COPY(sail_string)(sail_string *str1, const_sail_string str2)
 {
   size_t len = strlen(str2);
-  *str1 = (sail_string)realloc(*str1, len + 1);
-  *str1 = strcpy(*str1, str2);
+  if (*str1 == str2) return;
+  *str1 = sail_string_reserve(*str1, len + 1);
+  memcpy(*str1, str2, len + 1);
 }
 
 void KILL(sail_string)(sail_string *str)
@@ -216,36 +233,20 @@ void undefined_string(sail_string *str, const unit u) {}
 
 void concat_str(sail_string *stro, const_sail_string str1, const_sail_string str2)
 {
-  sail_string in1;
-  sail_string in2;
   size_t in1_len = strlen(str1);
   size_t in2_len = strlen(str2);
-  bool in1_free = false;
-  bool in2_free = false;
 
-  if (*stro == str1) {
-    in1 = (sail_string)sail_malloc(in1_len + 1);
-    strcpy(in1, str1);
-    in1_free = true;
+  if (*stro == str1 || *stro == str2) {
+    sail_string out = (sail_string)sail_malloc(in1_len + in2_len + 1);
+    memcpy(out, str1, in1_len);
+    memcpy(out + in1_len, str2, in2_len + 1);
+    sail_free(*stro);
+    *stro = out;
   } else {
-    in1 = (sail_string)str1;
+    *stro = sail_string_reserve(*stro, in1_len + in2_len + 1);
+    memcpy(*stro, str1, in1_len);
+    memcpy(*stro + in1_len, str2, in2_len + 1);
   }
-
-  if (*stro == str2) {
-    in2 = (sail_string)sail_malloc(in2_len + 1);
-    strcpy(in2, str2);
-    in2_free = true;
-  } else {
-    in2 = (sail_string)str2;
-  }
-
-  *stro = (sail_string)realloc(*stro, in1_len + in2_len + 1);
-  (*stro)[0] = '\0';
-  strcat(*stro, in1);
-  strcat(*stro, in2);
-
-  if (in1_free) sail_free(in1);
-  if (in2_free) sail_free(in2);
 }
 
 bool string_startswith(const_sail_string s, const_sail_string prefix)
@@ -263,11 +264,11 @@ void string_drop(sail_string *dst, const_sail_string s, sail_int ns)
   size_t len = strlen(s);
   mach_int n = CREATE_OF(mach_int, sail_int)(ns);
   if (len >= n) {
-    *dst = (sail_string)realloc(*dst, (len - n) + 1);
+    *dst = sail_string_reserve(*dst, (len - n) + 1);
     memcpy(*dst, s + n, len - n);
     (*dst)[len - n] = '\0';
   } else {
-    *dst = (sail_string)realloc(*dst, 1);
+    *dst = sail_string_reserve(*dst, 1);
     **dst = '\0';
   }
 }
@@ -282,7 +283,7 @@ void string_take(sail_string *dst, const_sail_string s, sail_int ns)
   } else {
     to_copy = n;
   }
-  *dst = (sail_string)realloc(*dst, to_copy + 1);
+  *dst = sail_string_reserve(*dst, to_copy + 1);
   memcpy(*dst, s, to_copy);
   (*dst)[to_copy] = '\0';
 }
@@ -418,38 +419,87 @@ void RECREATE_OF(sail_int, sail_string)(sail_int *rop, const_sail_string str)
   CONVERT_OF(sail_int, sail_string)(rop, str);
 }
 
-void dec_str(sail_string *str, const sail_int n)
+/*
+ * Return a new string: prefix, then the absolute value of z in hex,
+ * zero-padded to at least width digits. This is the same as
+ * gmp_asprintf with "%0*Zx", but much faster.
+ */
+static char *sail_hex_string(const char *prefix, mpz_srcptr z, size_t width, bool upper)
 {
-  sail_mpz_view v;
-  sail_free(*str);
-  gmp_asprintf(str, "%Zd", sail_int_view(&v, n));
+  const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+  const int limb_digits = GMP_NUMB_BITS / 4;
+  size_t n = mpz_size(z);
+  const mp_limb_t *limbs = mpz_limbs_read(z);
+  size_t ndigits = 1;
+  if (n > 0) {
+    ndigits = (n - 1) * limb_digits;
+    for (mp_limb_t top = limbs[n - 1]; top != 0; top >>= 4) ndigits++;
+  }
+  if (ndigits < width) ndigits = width;
+  size_t prefix_len = strlen(prefix);
+  char *str = (char *)sail_malloc(prefix_len + ndigits + 1);
+  memcpy(str, prefix, prefix_len);
+  char *p = str + prefix_len + ndigits;
+  *p = '\0';
+  size_t left = ndigits;
+  for (size_t i = 0; left > 0; i++) {
+    mp_limb_t word = i < n ? limbs[i] : 0;
+    size_t count = left < (size_t)limb_digits ? left : (size_t)limb_digits;
+    for (size_t j = 0; j < count; j++) {
+      *--p = digits[word & 0xF];
+      word >>= 4;
+    }
+    left -= count;
+  }
+  return str;
 }
 
-static void hex_str_fmt(sail_string *str, const sail_int n, const char *neg_fmt, const char *pos_fmt)
+/*
+ * Return a new string with the decimal value of a 64-bit integer.
+ */
+static char *sail_dec_string(int64_t value)
+{
+  char buf[24];
+  char *p = buf + sizeof(buf);
+  *--p = '\0';
+  uint64_t mag = value < 0 ? -(uint64_t)value : (uint64_t)value;
+  do {
+    *--p = (char)('0' + mag % 10);
+    mag /= 10;
+  } while (mag != 0);
+  if (value < 0) *--p = '-';
+  size_t len = (size_t)(buf + sizeof(buf) - p);
+  char *str = (char *)sail_malloc(len);
+  memcpy(str, p, len);
+  return str;
+}
+
+void dec_str(sail_string *str, const sail_int n)
+{
+  sail_free(*str);
+  if (SAIL_LIKELY(n.big == NULL)) {
+    *str = sail_dec_string(n.val);
+  } else {
+    gmp_asprintf(str, "%Zd", n.big);
+  }
+}
+
+static void hex_str_fmt(sail_string *str, const sail_int n, bool upper)
 {
   sail_mpz_view v;
   mpz_srcptr z = sail_int_view(&v, n);
   sail_free(*str);
-
-  if (mpz_sgn(z) < 0) {
-    mpz_t abs;
-    mpz_init(abs);
-    mpz_abs(abs, z);
-    gmp_asprintf(str, neg_fmt, abs);
-    mpz_clear(abs);
-  } else {
-    gmp_asprintf(str, pos_fmt, z);
-  }
+  *str = sail_hex_string(mpz_sgn(z) < 0 ? "-0x" : "0x", z, 0, upper);
 }
 
 void hex_str(sail_string *str, const sail_int n)
 {
-  hex_str_fmt(str, n, "-0x%Zx", "0x%Zx");
+  hex_str_fmt(str, n, false);
 }
 
 void hex_str_upper(sail_string *str, const sail_int n)
 {
-  hex_str_fmt(str, n, "-0x%ZX", "0x%ZX");
+  hex_str_fmt(str, n, true);
 }
 
 void shl_int(sail_int *rop, const sail_int op1, const sail_int op2)
@@ -1879,10 +1929,9 @@ void string_of_int(sail_string *str, const sail_int i)
 void string_of_fbits(sail_string *str, const fbits op)
 {
   sail_free(*str);
-  int bytes = asprintf(str, "0x%" PRIx64, op);
-  if (bytes == -1) {
-    fprintf(stderr, "Could not print bits 0x%" PRIx64 "\n", op);
-  }
+  mp_limb_t limb = op;
+  __mpz_struct z;
+  *str = sail_hex_string("0x", mpz_roinit_n(&z, &limb, op != 0), 0, false);
 }
 
 void string_of_lbits(sail_string *str, const lbits op)
@@ -1891,7 +1940,7 @@ void string_of_lbits(sail_string *str, const lbits op)
   sail_mpz_view v;
   mpz_srcptr z = sail_lbits_view(&v, op);
   if ((op.len % 4) == 0) {
-    gmp_asprintf(str, "0x%*0ZX", op.len / 4, z);
+    *str = sail_hex_string("0x", z, op.len / 4, true);
   } else {
     *str = (char *) sail_malloc((op.len + 3) * sizeof(char));
     (*str)[0] = '0';
@@ -1906,10 +1955,7 @@ void string_of_lbits(sail_string *str, const lbits op)
 void decimal_string_of_fbits(sail_string *str, const fbits op)
 {
   sail_free(*str);
-  int bytes = asprintf(str, "%" PRId64, op);
-  if (bytes == -1) {
-    fprintf(stderr, "Could not print bits %" PRId64 "\n", op);
-  }
+  *str = sail_dec_string((int64_t)op);
 }
 
 void decimal_string_of_lbits(sail_string *str, const lbits op)

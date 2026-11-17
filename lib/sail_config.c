@@ -272,7 +272,7 @@ void sail_config_bits_abstract_len(sail_string *str, const sail_config_json conf
   sail_string len_str = cJSON_GetStringValue(len_json);
 
   size_t sz = strlen(len_str);
-  *str = (sail_string)realloc(*str, sz + 1);
+  *str = sail_string_reserve(*str, sz + 1);
   *str = strcpy(*str, len_str);
 }
 
@@ -281,7 +281,7 @@ void sail_config_unwrap_string(sail_string *str, const sail_config_json config)
   sail_string conf_str = cJSON_GetStringValue((cJSON *)config);
 
   size_t len = strlen(conf_str);
-  *str = (sail_string)realloc(*str, len + 1);
+  *str = sail_string_reserve(*str, len + 1);
   *str = strcpy(*str, conf_str);
 }
 
