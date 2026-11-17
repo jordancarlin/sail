@@ -1,0 +1,19 @@
+fixed add 0x0000000000000000
+fixed sub 0xFFFFFFFFFFFFFFFC
+fixed12 add 0x003
+fixed12 sub 0x001
+fixed8 sub 0xFF
+add 0x0000000000000000
+sub 0xFFFFFFFFFFFFFFFE
+add 0xFFFFFFFFFFFFFFFE
+sub 0x0000000000000000
+add 0xFFD
+sub 0xFFF
+add 0x02
+sub 0x00
+add 0b0
+sub 0b0
+add int 0xFFF
+sub int 0xFFD
+add int 0x0000000000000000
+sub int 0xFFFFFFFFFFFFFFFE

@@ -756,6 +756,29 @@ static inline void sub_bits_int(lbits *rop, const lbits op1, const sail_int op2)
   }
 }
 
+/* Add or subtract a 64-bit integer to a bitvector of at most 64 bits, modulo 2^len. */
+static inline fbits sail_add_fbits_int(const fbits op1, const mach_int op2, const uint64_t len)
+{
+  return (op1 + (uint64_t)op2) & sail_mask64(len);
+}
+
+static inline fbits sail_sub_fbits_int(const fbits op1, const mach_int op2, const uint64_t len)
+{
+  return (op1 - (uint64_t)op2) & sail_mask64(len);
+}
+
+static inline sbits sail_add_sbits_int(const sbits op1, const mach_int op2)
+{
+  sbits rop = {op1.len, (op1.bits + (uint64_t)op2) & sail_mask64(op1.len)};
+  return rop;
+}
+
+static inline sbits sail_sub_sbits_int(const sbits op1, const mach_int op2)
+{
+  sbits rop = {op1.len, (op1.bits - (uint64_t)op2) & sail_mask64(op1.len)};
+  return rop;
+}
+
 void and_bits(lbits *rop, const lbits op1, const lbits op2);
 void or_bits(lbits *rop, const lbits op1, const lbits op2);
 void xor_bits(lbits *rop, const lbits op1, const lbits op2);

@@ -499,6 +499,17 @@ end) : CONFIG = struct
         AE_val (AV_cval (V_call (Bvadd, [v1; v2]), typ))
     | "sub_bits", [AV_cval (v1, _); AV_cval (v2, _)] when ctyp_equal (cval_ctyp v1) (cval_ctyp v2) ->
         AE_val (AV_cval (V_call (Bvsub, [v1; v2]), typ))
+    (* Add or subtract a 64-bit integer to a bitvector of at most 64 bits. *)
+    | (("add_bits_int" | "sub_bits_int") as f), [(AV_cval (v, _) as x); (AV_cval (i, _) as y)]
+      when is_fint64 i && ctyp_equal (convert_typ ctx typ) (cval_ctyp v) -> (
+        let f = if f = "add_bits_int" then "add" else "sub" in
+        match cval_ctyp v with
+        | CT_fbits n ->
+            let len = AV_cval (V_lit (V_int (Z.of_int n), CT_fint 64), atom_typ (nint n)) in
+            AE_app (Pure_extern (mk_id ("sail_" ^ f ^ "_fbits_int"), Some typ), [x; y; len], typ)
+        | CT_sbits _ -> AE_app (Pure_extern (mk_id ("sail_" ^ f ^ "_sbits_int"), Some typ), [x; y], typ)
+        | _ -> no_change
+      )
     | "and_bits", [AV_cval (v1, _); AV_cval (v2, _)] when ctyp_equal (cval_ctyp v1) (cval_ctyp v2) ->
         AE_val (AV_cval (V_call (Bvand, [v1; v2]), typ))
     | "or_bits", [AV_cval (v1, _); AV_cval (v2, _)] when ctyp_equal (cval_ctyp v1) (cval_ctyp v2) ->
