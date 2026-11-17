@@ -73,6 +73,36 @@ static inline void sail_free(void *ptr)
 #define sail_new_array(type, len) (type *)(sail_malloc((len) * sizeof(type)))
 
 /*
+ * Data for generated vector types is shared copy-on-write. A reference
+ * count is kept in a header before the first element. An empty vector
+ * has NULL data.
+ */
+typedef union {
+  size_t refs;
+  long double align_ld;
+  void *align_ptr;
+  uint64_t align_u64;
+} sail_vector_header;
+
+static inline void *sail_vector_alloc(size_t elem_size, size_t len)
+{
+  if (len == 0) return NULL;
+  sail_vector_header *h = (sail_vector_header *)sail_malloc(sizeof(sail_vector_header) + len * elem_size);
+  h->refs = 1;
+  return h + 1;
+}
+
+static inline size_t *sail_vector_refs(void *data)
+{
+  return &((sail_vector_header *)data - 1)->refs;
+}
+
+static inline void sail_vector_free(void *data)
+{
+  sail_free((sail_vector_header *)data - 1);
+}
+
+/*
  * Called by the RTS to initialise and clear any library state.
  */
 void setup_library(void);
