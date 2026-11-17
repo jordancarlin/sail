@@ -119,6 +119,7 @@ static mpz_t sail_lib_tmp1, sail_lib_tmp2, sail_lib_tmp3;
 static real sail_lib_tmp_real;
 
 static void sail_mpz_pool_clear(void);
+static void sail_lbits_pool_clear(void);
 
 #define FLOAT_PRECISION 255
 
@@ -139,6 +140,7 @@ void cleanup_library(void)
   mpz_clear(sail_lib_tmp3);
   mpq_clear(sail_lib_tmp_real);
   sail_mpz_pool_clear();
+  sail_lbits_pool_clear();
 }
 
 bool EQUAL(unit)(const unit a, const unit b)
@@ -320,6 +322,66 @@ void sail_mpz_release(mpz_ptr z)
   } else {
     mpz_clear(z);
     sail_free(z);
+  }
+}
+
+/* A big lbits value. The mpz is the first member, so lbits.big points to it. */
+typedef struct {
+  mpz_t z;
+  uint64_t refs;
+} sail_lbits_big;
+
+#define SAIL_LBITS_POOL_SIZE 256
+static sail_lbits_big *sail_lbits_pool[SAIL_LBITS_POOL_SIZE];
+static int sail_lbits_pool_count = 0;
+
+static mpz_ptr sail_lbits_alloc(void)
+{
+  sail_lbits_big *b;
+  if (sail_lbits_pool_count > 0) {
+    b = sail_lbits_pool[--sail_lbits_pool_count];
+  } else {
+    b = (sail_lbits_big *)sail_malloc(sizeof(sail_lbits_big));
+    mpz_init(b->z);
+  }
+  b->refs = 1;
+  return b->z;
+}
+
+void sail_lbits_release(mpz_ptr z)
+{
+  sail_lbits_big *b = (sail_lbits_big *)z;
+  if (--b->refs > 0) return;
+  if (sail_lbits_pool_count < SAIL_LBITS_POOL_SIZE) {
+    sail_lbits_pool[sail_lbits_pool_count++] = b;
+  } else {
+    mpz_clear(b->z);
+    sail_free(b);
+  }
+}
+
+static inline bool sail_lbits_shared(mpz_srcptr z)
+{
+  return ((const sail_lbits_big *)z)->refs > 1;
+}
+
+/* Make the mpz of a big rop unique, so that it can be written in place. */
+static void sail_lbits_unique(lbits *rop)
+{
+  if (rop->len > 64 && sail_lbits_shared(rop->big)) {
+    mpz_ptr z = sail_lbits_alloc();
+    mpz_set(z, rop->big);
+    sail_lbits_release(rop->big);
+    rop->big = z;
+  }
+}
+
+static void sail_lbits_pool_clear(void)
+{
+  while (sail_lbits_pool_count > 0) {
+    sail_lbits_big *b = sail_lbits_pool[--sail_lbits_pool_count];
+    mpz_clear(b->z);
+    sail_free(b);
   }
 }
 
@@ -688,7 +750,12 @@ bool EQUAL(ref_fbits)(const fbits *op1, const fbits *op2)
  */
 static inline mpz_ptr sail_lbits_make_big(lbits *rop, const uint64_t len)
 {
-  if (rop->len <= 64) rop->big = sail_mpz_alloc();
+  if (rop->len <= 64) {
+    rop->big = sail_lbits_alloc();
+  } else if (sail_lbits_shared(rop->big)) {
+    sail_lbits_release(rop->big);
+    rop->big = sail_lbits_alloc();
+  }
   rop->len = len;
   return rop->big;
 }
@@ -738,9 +805,10 @@ void sail_lbits_set_u64_slow(lbits *rop, const uint64_t len, const uint64_t op)
 
 void sail_lbits_copy_slow(lbits *rop, const lbits op)
 {
-  if (rop->len > 64 && rop->big == op.big) return;
-  mpz_ptr z = sail_lbits_make_big(rop, op.len);
-  mpz_set(z, op.big);
+  ((sail_lbits_big *)op.big)->refs++;
+  if (rop->len > 64) sail_lbits_release(rop->big);
+  rop->big = op.big;
+  rop->len = op.len;
 }
 
 void UNDEFINED(lbits)(lbits *rop, const sail_int len)
@@ -772,6 +840,7 @@ void normalize_lbits(lbits *rop)
   if (rop->len <= 64) {
     rop->word &= sail_mask64(rop->len);
   } else {
+    sail_lbits_unique(rop);
     mpz_fdiv_r_2exp(rop->big, rop->big, rop->len);
   }
 }
@@ -1286,6 +1355,26 @@ static void sail_lbits_insert(lbits *rop, const lbits op, const uint64_t start, 
     uint64_t mask = start >= 64 ? 0 : sail_mask64(slice_len) << start;
     uint64_t s = start >= 64 ? 0 : sail_lbits_low64(slice) << start;
     sail_lbits_set_small(rop, op.len, ((op.word & ~mask) | (s & mask)) & sail_mask64(op.len));
+    return;
+  }
+
+  if (slice_len <= 64 && start + slice_len <= op.len) {
+    /* Update at most two limbs of rop in place. */
+    uint64_t s = sail_lbits_extract(slice, 0, slice_len);
+    COPY(lbits)(rop, op);
+    sail_lbits_unique(rop);
+    mpz_ptr z = rop->big;
+    const size_t nlimbs = (op.len + 63) / 64;
+    const size_t size = mpz_size(z);
+    mp_limb_t *d = mpz_limbs_modify(z, nlimbs);
+    for (size_t i = size; i < nlimbs; i++) d[i] = 0;
+    const uint64_t limb = start / 64, off = start % 64;
+    const uint64_t mask = sail_mask64(slice_len);
+    d[limb] = (d[limb] & ~(mask << off)) | (s << off);
+    if (off != 0 && off + slice_len > 64) {
+      d[limb + 1] = (d[limb + 1] & ~(mask >> (64 - off))) | (s >> (64 - off));
+    }
+    mpz_limbs_finish(z, nlimbs);
     return;
   }
 

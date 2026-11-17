@@ -258,6 +258,13 @@ mpz_ptr sail_mpz_alloc(void);
 void sail_mpz_release(mpz_ptr z);
 
 /*
+ * Big lbits values are reference counted and copied on write. A copy
+ * shares the mpz. Code that writes the mpz of an lbits must first make
+ * it unique, with sail_lbits_make_big or sail_lbits_unique.
+ */
+void sail_lbits_release(mpz_ptr z);
+
+/*
  * Set rop from a GMP integer. rop and op must not share storage.
  */
 void sail_int_set_mpz(sail_int *rop, const mpz_t op);
@@ -585,7 +592,7 @@ static inline mpz_srcptr sail_lbits_view(sail_mpz_view *v, const lbits op)
 /* Set rop to a value with len <= 64, where op has no bits above len. */
 static inline void sail_lbits_set_small(lbits *rop, const uint64_t len, const uint64_t op)
 {
-  if (SAIL_UNLIKELY(rop->len > 64)) sail_mpz_release(rop->big);
+  if (SAIL_UNLIKELY(rop->len > 64)) sail_lbits_release(rop->big);
   rop->len = len;
   rop->word = op;
 }
@@ -621,7 +628,7 @@ static inline void RECREATE(lbits)(lbits *rop)
 
 static inline void KILL(lbits)(lbits *rop)
 {
-  if (SAIL_UNLIKELY(rop->len > 64)) sail_mpz_release(rop->big);
+  if (SAIL_UNLIKELY(rop->len > 64)) sail_lbits_release(rop->big);
 }
 
 void sail_lbits_copy_slow(lbits *rop, const lbits op);
