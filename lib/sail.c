@@ -365,12 +365,30 @@ static inline bool sail_lbits_shared(mpz_srcptr z)
   return ((const sail_lbits_big *)z)->refs > 1;
 }
 
+/*
+ * Return the limbs of a new unique mpz that holds the value of op,
+ * zero-extended to nlimbs limbs. The caller must call mpz_limbs_finish
+ * on *zp with nlimbs.
+ */
+static mp_limb_t *sail_lbits_clone_limbs(mpz_ptr *zp, mpz_srcptr op, size_t nlimbs)
+{
+  const size_t size = mpz_size(op);
+  mpz_ptr z = sail_lbits_alloc();
+  mp_limb_t *d = mpz_limbs_write(z, nlimbs > 0 ? nlimbs : 1);
+  memcpy(d, mpz_limbs_read(op), size * sizeof(mp_limb_t));
+  if (nlimbs > size) memset(d + size, 0, (nlimbs - size) * sizeof(mp_limb_t));
+  *zp = z;
+  return d;
+}
+
 /* Make the mpz of a big rop unique, so that it can be written in place. */
 static void sail_lbits_unique(lbits *rop)
 {
   if (rop->len > 64 && sail_lbits_shared(rop->big)) {
-    mpz_ptr z = sail_lbits_alloc();
-    mpz_set(z, rop->big);
+    const size_t size = mpz_size(rop->big);
+    mpz_ptr z;
+    sail_lbits_clone_limbs(&z, rop->big, size);
+    mpz_limbs_finish(z, size);
     sail_lbits_release(rop->big);
     rop->big = z;
   }
@@ -1159,7 +1177,10 @@ void sail_truncateLSB_slow(lbits *rop, const lbits op, const sail_int len)
 static inline fbits sail_lbits_tstbit(const lbits op, const uint64_t n)
 {
   if (op.len <= 64) return n >= 64 ? 0 : (op.word >> n) & 1;
-  return (fbits)mpz_tstbit(op.big, n);
+  /* Big lbits values are never negative, so read the limb directly. */
+  const uint64_t limb = n / GMP_NUMB_BITS;
+  if (limb >= mpz_size(op.big)) return 0;
+  return (fbits)((mpz_getlimbn(op.big, limb) >> (n % GMP_NUMB_BITS)) & 1);
 }
 
 fbits bitvector_access(const lbits op, const sail_int n_mpz)
@@ -1346,6 +1367,29 @@ void set_slice_int(sail_int *rop,
 }
 
 /*
+ * Set limb i of a non-negative z to (limb & keep) | set, and keep z
+ * normalized. This avoids mpz_limbs_modify and mpz_limbs_finish, which
+ * are slow for single-bit updates of long values.
+ */
+static inline void sail_mpz_update_limb(mpz_ptr z, size_t i, mp_limb_t keep, mp_limb_t set)
+{
+  size_t size = (size_t)z->_mp_size;
+  if (i < size) {
+    mp_limb_t *d = z->_mp_d;
+    d[i] = (d[i] & keep) | set;
+    if (i == size - 1 && d[i] == 0) {
+      while (size > 0 && d[size - 1] == 0) size--;
+      z->_mp_size = (int)size;
+    }
+  } else if (set != 0) {
+    mp_limb_t *d = mpz_limbs_modify(z, (mp_size_t)(i + 1));
+    memset(d + size, 0, (i - size) * sizeof(mp_limb_t));
+    d[i] = set;
+    z->_mp_size = (int)(i + 1);
+  }
+}
+
+/*
  * Set rop to op with bits [start, start + slice_len) replaced by the
  * low bits of slice.
  */
@@ -1361,20 +1405,24 @@ static void sail_lbits_insert(lbits *rop, const lbits op, const uint64_t start, 
   if (slice_len <= 64 && start + slice_len <= op.len) {
     /* Update at most two limbs of rop in place. */
     uint64_t s = sail_lbits_extract(slice, 0, slice_len);
-    COPY(lbits)(rop, op);
-    sail_lbits_unique(rop);
-    mpz_ptr z = rop->big;
-    const size_t nlimbs = (op.len + 63) / 64;
-    const size_t size = mpz_size(z);
-    mp_limb_t *d = mpz_limbs_modify(z, nlimbs);
-    for (size_t i = size; i < nlimbs; i++) d[i] = 0;
+    mpz_ptr z;
+    if (rop->len > 64 && rop->big == op.big && !sail_lbits_shared(op.big)) {
+      /* rop is op and has the only reference, so write it in place. */
+      z = rop->big;
+    } else {
+      const size_t size = mpz_size(op.big);
+      sail_lbits_clone_limbs(&z, op.big, size);
+      z->_mp_size = (int)size;
+      if (rop->len > 64) sail_lbits_release(rop->big);
+      rop->big = z;
+      rop->len = op.len;
+    }
     const uint64_t limb = start / 64, off = start % 64;
     const uint64_t mask = sail_mask64(slice_len);
-    d[limb] = (d[limb] & ~(mask << off)) | (s << off);
+    sail_mpz_update_limb(z, limb, ~(mask << off), s << off);
     if (off != 0 && off + slice_len > 64) {
-      d[limb + 1] = (d[limb + 1] & ~(mask >> (64 - off))) | (s >> (64 - off));
+      sail_mpz_update_limb(z, limb + 1, ~(mask >> (64 - off)), s >> (64 - off));
     }
-    mpz_limbs_finish(z, nlimbs);
     return;
   }
 
