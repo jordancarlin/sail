@@ -313,6 +313,18 @@ mach_int128 sail_int_get_i128_slow(const sail_int op)
   if (mpz_size(op.big) > 1) mag |= (unsigned __int128)mpz_getlimbn(op.big, 1) << 64;
   return mpz_sgn(op.big) < 0 ? -(mach_int128)mag : (mach_int128)mag;
 }
+
+mach_int128 tmod_int128_int_slow(const mach_int128 op1, const sail_int op2)
+{
+  sail_int a, r;
+  CREATE_OF(sail_int, mach_int128)(&a, op1);
+  CREATE(sail_int)(&r);
+  tmod_int(&r, a, op2);
+  mach_int128 rop = CONVERT_OF(mach_int128, sail_int)(r);
+  KILL(sail_int)(&a);
+  KILL(sail_int)(&r);
+  return rop;
+}
 #endif
 
 /*

@@ -552,6 +552,11 @@ end) : CONFIG = struct
       when is_fint op1 && is_fint op2 && result_fits_int128 ctx typ ->
         AE_app (Pure_extern (mk_id (f ^ "128"), Some typ), args, typ)
     | ("add_int" | "sub_int"), _ -> no_change
+    (* Remainder of a 128-bit integer by an integer, when the result fits. *)
+    | "tmod_int", [AV_cval (op1, _); op2]
+      when is_fint op1 && result_fits_int128 ctx typ
+           && try ctyp_equal (convert_typ ctx (aval_typ op2)) CT_lint with _ -> false ->
+        AE_app (Pure_extern (mk_id "tmod_int128_int", Some typ), args, typ)
     (* Multiply and divide on machine integers when the result fits in 64 bits
        and, for division, the divisor cannot be zero. *)
     | (("mult_int" | "tdiv_int" | "tmod_int") as f), [AV_cval (op1, _); AV_cval (op2, typ2)]

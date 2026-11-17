@@ -1055,6 +1055,19 @@ static inline mach_int128 sail_unsigned128_sbits(const sbits op)
 {
   return (mach_int128)op.bits;
 }
+
+mach_int128 tmod_int128_int_slow(const mach_int128 op1, const sail_int op2);
+
+/* Truncating remainder of a 128-bit integer by an arbitrary-precision integer. */
+static inline mach_int128 tmod_int128_int(const mach_int128 op1, const sail_int op2)
+{
+  if (SAIL_LIKELY(op2.big == NULL && op2.val > 0 && op1 >= 0 && op1 <= (mach_int128)UINT64_MAX)) {
+    /* A 64-bit remainder is much faster than a 128-bit one. */
+    return (mach_int128)((uint64_t)op1 % (uint64_t)op2.val);
+  }
+  if (op2.big == NULL && op2.val != 0) return op1 % op2.val;
+  return tmod_int128_int_slow(op1, op2);
+}
 #endif
 
 void sail_signed(sail_int *rop, const lbits op);

@@ -29,6 +29,24 @@ val in_range : (bits(64), range(0, 4096), bits(64)) -> bool
 
 function in_range(addr, n, limit) = end_addr(addr, n) <= unsigned(limit)
 
+// The same type as the sail-riscv remainder operator.
+val rem_pos = pure "tmod_int" : forall 'n 'm, 'n >= 0 & 'm > 0. (int('n), int('m)) -> int(mod('n, 'm))
+
+val mod_u : (bits(64), {'m, 'm > 0. int('m)}) -> bool
+
+function mod_u(x, n) = {
+    print_int("mod_u ", rem_pos(unsigned(x), n));
+    rem_pos(unsigned(x), n) == 0
+}
+
+val mod_s : (range(- (2 ^ 70), 2 ^ 70), int) -> range(- (2 ^ 70), 2 ^ 70)
+
+function mod_s(x, n) = {
+    let r = tmod_int(x, n);
+    assert(- (2 ^ 70) <= r & r <= 2 ^ 70);
+    r
+}
+
 val main : unit -> unit
 
 function main() = {
@@ -53,5 +71,11 @@ function main() = {
     print_int("w.hi ", w.hi);
     let i : int = w.lo + w.hi;
     print_int("sum ", i);
-    print_endline(if w.lo == 2 ^ 64 then "eq" else "ne")
+    print_endline(if w.lo == 2 ^ 64 then "eq" else "ne");
+    print_endline(if mod_u(a, 8) then "aligned" else "not aligned");
+    print_endline(if mod_u(b, 8) then "aligned" else "not aligned");
+    let _ = mod_u(b, 3);
+    let _ = mod_u(a, 2 ^ 65);
+    print_int("mod_s ", mod_s(neg, 10));
+    print_int("mod_s ", mod_s(neg, - (2 ^ 66)))
 }
