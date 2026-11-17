@@ -86,6 +86,141 @@ let c_error ?loc:(l = Parse_ast.Unknown) message = raise (Reporting.err_general 
 let max_int n = Z.pred (Z.shift_left Z.one (n - 1))
 let min_int n = Z.neg (Z.shift_left Z.one (n - 1))
 
+(* Inline calls of the form [f(C)], where [f] is a single match on its enum
+   parameter and [C] is a constant constructor, for example
+   [currentlyEnabled(Ext_S)]. The call is replaced by the body of the case
+   for [C], and calls inside that body are inlined too, up to a depth
+   limit. Only the cases before the first case that is not a plain
+   constructor pattern are used, so the first match is always the same. *)
+let inline_enum_cases ast =
+  let open Rewriter in
+  let rec strip (E_aux (e, _) as exp) = match e with E_typ (_, e) | E_block [e] -> strip e | _ -> exp in
+  let rec pat_id (P_aux (p, _)) = match p with P_id id -> Some id | P_typ (_, p) -> pat_id p | _ -> None in
+  let max_size = 40 and max_depth = 4 in
+  let small_and_safe body =
+    let size = ref 0 and ok = ref true in
+    let alg =
+      {
+        id_exp_alg with
+        e_aux =
+          (fun (e, annot) ->
+            incr size;
+            E_aux (e, annot)
+          );
+        e_return =
+          (fun e ->
+            ok := false;
+            E_return e
+          );
+        e_internal_return =
+          (fun e ->
+            ok := false;
+            E_internal_return e
+          );
+      }
+    in
+    ignore (fold_exp alg body);
+    !ok && !size <= max_size
+  in
+  (* The index of the first definition (val spec, register or function) of
+     each top-level name. A case body is inlined into a definition only if
+     all the names it uses are defined before that definition. *)
+  let def_pos : (string, int) Hashtbl.t = Hashtbl.create 1024 in
+  List.iteri
+    (fun index (Def_aux (def, _)) ->
+      let add id = if not (Hashtbl.mem def_pos (string_of_id id)) then Hashtbl.add def_pos (string_of_id id) index in
+      match def with
+      | Def_val (VS_aux (VS_val_spec (_, id, _), _)) -> add id
+      | Def_register (Reg_aux (Reg (_, id, _), _)) -> add id
+      | Def_fundef fd -> add (id_of_fundef fd)
+      | _ -> ()
+    )
+    ast.Ast_defs.defs;
+  let last_use body =
+    let last = ref (-1) in
+    let use id = match Hashtbl.find_opt def_pos (string_of_id id) with Some i -> last := max !last i | None -> () in
+    let alg =
+      {
+        id_exp_alg with
+        e_id =
+          (fun id ->
+            use id;
+            E_id id
+          );
+        e_ref =
+          (fun id ->
+            use id;
+            E_ref id
+          );
+        e_app =
+          (fun (f, args) ->
+            use f;
+            E_app (f, args)
+          );
+      }
+    in
+    ignore (fold_exp alg body);
+    !last
+  in
+  (* For each function, its cases, with the index of the last definition
+     that each case body uses. *)
+  let table : (string, (id * int * tannot exp) list) Hashtbl.t = Hashtbl.create 16 in
+  List.iter
+    (function
+      | Def_aux
+          ( Def_fundef (FD_aux (FD_function (_, _, [FCL_aux (FCL_funcl (f, Pat_aux (Pat_exp (pat, body), _)), _)]), _)),
+            _
+          ) -> (
+          match (pat_id pat, strip body) with
+          | Some p, E_aux (E_match (scrutinee, cases), _)
+            when match strip scrutinee with E_aux (E_id p', _) -> Id.compare p p' = 0 | _ -> false ->
+              let rec prefix = function
+                | Pat_aux (Pat_exp (cpat, e), _) :: rest -> (
+                    match pat_id cpat with
+                    | Some c when Type_check.is_enum_member c (Type_check.env_of_pat cpat) -> (c, e) :: prefix rest
+                    | _ -> []
+                  )
+                | _ -> []
+              in
+              let cases = List.filter (fun (_, e) -> small_and_safe e) (prefix cases) in
+              if List.length cases >= 2 then
+                Hashtbl.replace table (string_of_id f) (List.map (fun (c, e) -> (c, last_use e, e)) cases)
+          | _ -> ()
+        )
+      | _ -> ()
+      )
+    ast.Ast_defs.defs;
+  let rec inline def_index depth exp =
+    let alg =
+      {
+        id_exp_alg with
+        e_app =
+          (fun (f, args) ->
+            let default = E_app (f, args) in
+            match (Hashtbl.find_opt table (string_of_id f), List.map strip args) with
+            | Some cases, [E_aux (E_id c, _)] when depth < max_depth -> (
+                match List.find_opt (fun (c', _, _) -> Id.compare c c' = 0) cases with
+                | Some (_, last, body) when last < def_index -> E_block [inline def_index (depth + 1) body]
+                | _ -> default
+              )
+            | _ -> default
+          );
+      }
+    in
+    fold_exp alg exp
+  in
+  let defs =
+    List.mapi
+      (fun index -> function
+        | Def_aux (Def_fundef fdef, annot) ->
+            let rewriters = { rewriters_base with rewrite_exp = (fun _ e -> inline index 0 e) } in
+            Def_aux (Def_fundef (rewrite_fun rewriters fdef), annot)
+        | def -> def
+        )
+      ast.Ast_defs.defs
+  in
+  if Hashtbl.length table = 0 then ast else { ast with defs }
+
 (** This function is used to split types into those we allocate on the stack, versus those which need to live on the
     heap, or otherwise require some additional memory management.
 
@@ -2635,6 +2770,7 @@ module Codegen (Config : CODEGEN_CONFIG) = struct
 
   let compile_ast env effect_info basename ast =
     try
+      let ast = inline_enum_cases ast in
       let cdefs, ctx = jib_of_ast env effect_info ast in
       (* let cdefs', _ = Jib_optimize.remove_tuples cdefs ctx in *)
       let cdefs = insert_heap_returns ctx Bindings.empty cdefs in
