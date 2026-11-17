@@ -480,6 +480,21 @@ end) : CONFIG = struct
             AE_val (AV_cval (V_lit (V_bitvector (Sail_lib.zeros (Z.of_int n)), CT_fbits n), typ))
         | _ -> no_change
       )
+    | "sail_ones", [len] -> (
+        (* The type can use type variables of a caller, through a wrapper. *)
+        let n = try destruct_bitvector ctx.tc_env typ with _ -> None in
+        match (n, len) with
+        | Some (Nexp_aux (Nexp_constant n, _)), _ when Z.leq n (Z.of_int 64) ->
+            let n = Z.to_int n in
+            AE_val (AV_cval (V_lit (V_bitvector (Sail_lib.ones (Z.of_int n)), CT_fbits n), typ))
+        | _, AV_cval (v, _) when is_fint64 v -> (
+            match convert_typ ctx typ with
+            | CT_sbits _ -> AE_app (Pure_extern (mk_id "sail_ones_sbits", Some typ), [len], typ)
+            | _ -> no_change
+            | exception _ -> no_change
+          )
+        | _ -> no_change
+      )
     | "zero_extend", [(AV_cval (v, _) as arg); len] -> (
         match destruct_bitvector ctx.tc_env typ with
         | Some (Nexp_aux (Nexp_constant n, _)) when Z.leq n (Z.of_int 64) ->

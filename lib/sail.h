@@ -882,6 +882,24 @@ static inline void zeros(lbits *rop, const sail_int op)
   }
 }
 
+void sail_ones_slow(lbits *rop, const sail_int op);
+
+static inline void sail_ones(lbits *rop, const sail_int op)
+{
+  if (SAIL_LIKELY(op.big == NULL && (uint64_t)op.val <= 64)) {
+    sail_lbits_set_small(rop, (uint64_t)op.val, sail_mask64((uint64_t)op.val));
+  } else {
+    sail_ones_slow(rop, op);
+  }
+}
+
+/* All ones, for a length of at most 64. */
+static inline sbits sail_ones_sbits(const mach_int len)
+{
+  sbits rop = {(uint64_t)len, sail_mask64((uint64_t)len)};
+  return rop;
+}
+
 void zero_extend_slow(lbits *rop, const lbits op, const sail_int len);
 
 static inline void zero_extend(lbits *rop, const lbits op, const sail_int len)

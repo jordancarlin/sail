@@ -955,6 +955,19 @@ void zeros_slow(lbits *rop, const sail_int op)
   }
 }
 
+void sail_ones_slow(lbits *rop, const sail_int op)
+{
+  uint64_t len = sail_int_get_ui(op);
+  if (len <= 64) {
+    sail_lbits_set_small(rop, len, sail_mask64(len));
+  } else {
+    mpz_ptr big = sail_lbits_make_big(rop, len);
+    mpz_set_ui(big, 0);
+    mpz_setbit(big, len);
+    mpz_sub_ui(big, big, 1);
+  }
+}
+
 void zero_extend_slow(lbits *rop, const lbits op, const sail_int len)
 {
   /* The inline path does not take a negative len. As with mpz_get_ui,

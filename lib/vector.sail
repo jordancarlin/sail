@@ -399,6 +399,8 @@ val sail_zeros = pure {
 val sail_ones = pure {
   interpreter: "ones",
   ocaml: "ones",
+  c: "sail_ones",
+  cpp: "sail_ones",
 } : forall 'n, 'n >= 0. int('n) -> bits('n)
 
 function sail_ones(n) = not_vec(sail_zeros(n))
