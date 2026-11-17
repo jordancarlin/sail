@@ -86,6 +86,56 @@ let c_error ?loc:(l = Parse_ast.Unknown) message = raise (Reporting.err_general 
 let max_int n = Z.pred (Z.shift_left Z.one (n - 1))
 let min_int n = Z.neg (Z.shift_left Z.one (n - 1))
 
+(* Small wrapper functions. [Wrap_call (f, perm)] is a function whose body
+   is only a call to [f], with the parameters as arguments in some order,
+   for example [zero_extend(m, v) = sail_zero_extend(v, m)]. [perm] gives
+   the parameter index for each argument of [f]. [Wrap_param i] is a
+   function that returns its parameter [i], for example [__id(x) = x]. *)
+type call_wrapper = Wrap_call of id * int list | Wrap_param of int
+
+let call_wrappers : (string, call_wrapper) Hashtbl.t = Hashtbl.create 64
+
+let find_call_wrappers ast =
+  let rec pat_id (P_aux (p, _)) =
+    match p with P_id id -> Some id | P_typ (_, p) | P_var (p, _) -> pat_id p | _ -> None
+  in
+  let rec exp_id (E_aux (e, _)) = match e with E_id id -> Some id | E_typ (_, e) -> exp_id e | _ -> None in
+  let rec call (E_aux (e, _)) =
+    match e with E_app (f, args) -> Some (f, args) | E_typ (_, e) | E_block [e] -> call e | _ -> None
+  in
+  Hashtbl.clear call_wrappers;
+  List.iter
+    (function
+      | Def_aux
+          ( Def_fundef (FD_aux (FD_function (_, _, [FCL_aux (FCL_funcl (id, Pat_aux (Pat_exp (pat, body), _)), _)]), _)),
+            _
+          ) -> (
+          let params =
+            match pat with
+            | P_aux (P_tuple ps, _) -> List.map pat_id ps
+            | P_aux (P_typ (_, P_aux (P_tuple ps, _)), _) -> List.map pat_id ps
+            | p -> [pat_id p]
+          in
+          let index x =
+            let rec go i = function
+              | Some p :: ps -> if Id.compare p x = 0 then Some i else go (i + 1) ps
+              | None :: ps -> go (i + 1) ps
+              | [] -> None
+            in
+            go 0 params
+          in
+          match (call body, Option.bind (exp_id body) index) with
+          | _, Some i -> Hashtbl.replace call_wrappers (string_of_id id) (Wrap_param i)
+          | Some (f, args), _ when Id.compare f id <> 0 ->
+              let perm = List.map (fun a -> Option.bind (exp_id a) index) args in
+              if List.for_all Option.is_some perm then
+                Hashtbl.replace call_wrappers (string_of_id id) (Wrap_call (f, List.map Option.get perm))
+          | _ -> ()
+        )
+      | _ -> ()
+      )
+    ast.Ast_defs.defs
+
 (** This function is used to split types into those we allocate on the stack, versus those which need to live on the
     heap, or otherwise require some additional memory management.
 
@@ -520,9 +570,27 @@ end) : CONFIG = struct
   let analyze_primop ctx id args typ =
     let no_change = AE_app (id, args, typ) in
     match id with
-    | Sail_function id ->
-        if !optimize_primops then (try analyze_primop' ctx id args typ with Failure _ | Z.Overflow -> no_change)
-        else no_change
+    | Sail_function id when !optimize_primops -> (
+        let try_primop id args = try Some (analyze_primop' ctx id args typ) with Failure _ | Z.Overflow -> None in
+        match try_primop id args with
+        | Some aexp -> aexp
+        | None -> (
+            (* For a wrapper of an extern, try the peepholes of the extern. *)
+            match Hashtbl.find_opt call_wrappers (string_of_id id) with
+            | Some (Wrap_param i) when i < List.length args -> (
+                match c_aval ctx (List.nth args i) with AV_cval (v, _) -> AE_val (AV_cval (v, typ)) | _ -> no_change
+              )
+            | Some (Wrap_call (f, perm)) when ctx_is_extern f ctx && List.for_all (fun i -> i < List.length args) perm
+              -> (
+                let args' = List.map (List.nth args) perm in
+                match try_primop f args' with
+                | Some (AE_app (Sail_function f', _, _)) when Id.compare f f' = 0 -> no_change
+                | Some aexp -> aexp
+                | None -> no_change
+              )
+            | _ -> no_change
+          )
+      )
     | _ -> no_change
 
   let optimize_anf ctx aexp = analyze_functions ctx analyze_primop (c_literals ctx aexp)
@@ -2635,6 +2703,7 @@ module Codegen (Config : CODEGEN_CONFIG) = struct
 
   let compile_ast env effect_info basename ast =
     try
+      find_call_wrappers ast;
       let cdefs, ctx = jib_of_ast env effect_info ast in
       (* let cdefs', _ = Jib_optimize.remove_tuples cdefs ctx in *)
       let cdefs = insert_heap_returns ctx Bindings.empty cdefs in
