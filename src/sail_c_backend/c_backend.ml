@@ -221,12 +221,15 @@ module C_config (Opts : sig
   val preserve_types : IdSet.t
 end) : CONFIG = struct
   (* Like ctyp_suprema, but keep vectors of fixed-width bitvectors (such
-     as byte vectors) unwidened, so they do not become vectors of lbits. *)
+     as byte vectors) unwidened, so they do not become vectors of lbits.
+     Bitvectors of at most 64 bits become sbits, not lbits, so that for
+     example option(bits(64)) is a stack type. *)
   (** Convert a sail type into a C-type. This function can be quite slow, because it uses ctx.local_env and SMT to
       analyse the Sail types and attempts to fit them into the smallest possible C types, provided ctx.optimize_smt is
       true (default) **)
   let rec variant_arg_suprema = function
     | CT_vector (CT_fbits n) | CT_fvector (_, CT_fbits n) -> CT_vector (CT_fbits n)
+    | CT_fbits _ | CT_sbits _ -> CT_sbits 64
     | CT_tup ctyps -> CT_tup (List.map variant_arg_suprema ctyps)
     | ctyp -> ctyp_suprema ctyp
 
@@ -1388,6 +1391,66 @@ module Codegen (Config : CODEGEN_CONFIG) = struct
         in
         string "  /* conversions */" ^^ hardline ^^ separate hardline conversions ^^ hardline
         ^^ string "  /* end conversions */"
+    (* Two instances of the same variant, for example option(lbits) to
+       option(sbits). The constructors of both instances are in the same
+       order. *)
+    | CT_variant _, CT_variant _
+      when let _, to_ctors = variant_constructor_bindings l ctx ctyp_to in
+           let _, from_ctors = variant_constructor_bindings l ctx ctyp_from in
+           Bindings.cardinal to_ctors = Bindings.cardinal from_ctors ->
+        let _, to_ctors = variant_constructor_bindings l ctx ctyp_to in
+        let _, from_ctors = variant_constructor_bindings l ctx ctyp_from in
+        let result = ngensym () in
+        let stack_to = is_stack_ctyp ctx ctyp_to in
+        let case (to_ctor, to_ctyp) (from_ctor, from_ctyp) =
+          let field = ngensym () in
+          let stack_field = is_stack_ctyp ctx to_ctyp in
+          let r = sgen_name result and f = sgen_name field and c = sgen_id to_ctor in
+          ksprintf string "  case Kind_%s: {" (sgen_id from_ctor)
+          ^^ nest 2
+               (hardline
+               ^^ ksprintf string "  %s %s;" (sgen_ctyp to_ctyp) f
+               ^^ ( if stack_field then empty
+                    else hardline ^^ sail_create ~prefix:"  " ~suffix:";" (sgen_ctyp_name to_ctyp) "&%s" f
+                  )
+               ^^ hardline
+               ^^ codegen_conversion l ctx (CL_id (field, to_ctyp)) (V_ctor_unwrap (cval, (from_ctor, []), from_ctyp))
+               ^^ hardline
+               ^^ ( if stack_to then empty
+                    else sail_kill ~prefix:"  " ~suffix:";" (sgen_ctyp_name ctyp_to) "&%s" r ^^ hardline
+                  )
+               ^^ ksprintf string "  %s.kind = Kind_%s;" r c
+               ^^ hardline
+               ^^ ( if stack_field then ksprintf string "  %s.variants.%s = %s;" r c f
+                    else
+                      sail_create ~prefix:"  " ~suffix:";" (sgen_ctyp_name to_ctyp) "&%s.variants.%s" r c
+                      ^^ hardline
+                      ^^ sail_copy ~prefix:"  " ~suffix:";" (sgen_ctyp_name to_ctyp) "&%s.variants.%s, %s" r c f
+                      ^^ hardline
+                      ^^ sail_kill ~prefix:"  " ~suffix:";" (sgen_ctyp_name to_ctyp) "&%s" f
+                  )
+               ^^ hardline ^^ string "  break;"
+               )
+          ^^ hardline ^^ string "  }"
+        in
+        ksprintf string "  {" ^^ hardline
+        ^^ ksprintf string "  %s %s;" (sgen_ctyp ctyp_to) (sgen_name result)
+        ^^ ( if stack_to then empty
+             else hardline ^^ sail_create ~prefix:"  " ~suffix:";" (sgen_ctyp_name ctyp_to) "&%s" (sgen_name result)
+           )
+        ^^ hardline
+        ^^ ksprintf string "  switch (%s.kind) {" (sgen_cval cval)
+        ^^ hardline
+        ^^ separate hardline (List.map2 case (Bindings.bindings to_ctors) (Bindings.bindings from_ctors))
+        ^^ hardline ^^ string "  }" ^^ hardline
+        ^^ ( if stack_to then ksprintf string "  %s = %s;" (sgen_clexp_pure l clexp) (sgen_name result)
+             else
+               sail_copy ~prefix:"  " ~suffix:";" (sgen_ctyp_name ctyp_to) "%s, %s" (sgen_clexp l clexp)
+                 (sgen_name result)
+               ^^ hardline
+               ^^ sail_kill ~prefix:"  " ~suffix:";" (sgen_ctyp_name ctyp_to) "&%s" (sgen_name result)
+           )
+        ^^ hardline ^^ string "  }"
     (* For anything not special cased, just try to call a appropriate CONVERT_OF function. *)
     | _, _ when is_stack_ctyp ctx (clexp_ctyp clexp) ->
         sail_convert_of
