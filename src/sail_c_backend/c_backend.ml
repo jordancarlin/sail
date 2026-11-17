@@ -1419,6 +1419,37 @@ module Codegen (Config : CODEGEN_CONFIG) = struct
         string "  { /* try */"
         ^^ jump 2 2 (sq_separate_map hardline (codegen_instr fid ctx) instrs)
         ^^ hardline ^^ string "  }"
+    (* Convert between bits and byte vectors in the runtime, not with
+       the generic Sail loop over bitvector slices. *)
+    | I_funcall (CR_one x, Call, (f, _), [_; v])
+      when string_of_id f = "from_bytes_le"
+           && ctyp_equal (cval_ctyp v) (CT_vector (CT_fbits 8))
+           && match clexp_ctyp x with CT_lbits | CT_sbits _ | CT_fbits _ -> true | _ -> false -> (
+        let v = sgen_cval v in
+        match clexp_ctyp x with
+        | CT_lbits -> ksprintf string "  sail_from_bytes_le(%s, %s.len, %s.data);" (sgen_clexp l x) v v
+        | CT_sbits _ -> ksprintf string "  %s = sail_from_bytes_le_sbits(%s.len, %s.data);" (sgen_clexp_pure l x) v v
+        | _ -> ksprintf string "  %s = sail_from_bytes_le_u64(%s.len, %s.data);" (sgen_clexp_pure l x) v v
+      )
+    | I_funcall (CR_one x, Call, (f, _), [_; b])
+      when string_of_id f = "to_bytes_le"
+           && ctyp_equal (clexp_ctyp x) (CT_vector (CT_fbits 8))
+           && match cval_ctyp b with CT_lbits | CT_sbits _ | CT_fbits _ -> true | _ -> false ->
+        let vec_ctyp = clexp_ctyp x in
+        let x = sgen_clexp_pure l x in
+        let len, conv =
+          match cval_ctyp b with
+          | CT_lbits -> (sprintf "(%s).len / 8" (sgen_cval b), sprintf "sail_to_bytes_le(%s.data, %s.len, %s);")
+          | CT_sbits _ ->
+              (sprintf "(%s).len / 8" (sgen_cval b), sprintf "sail_to_bytes_le_u64(%s.data, %s.len, (%s).bits);")
+          | CT_fbits n -> (string_of_int (n / 8), sprintf "sail_to_bytes_le_u64(%s.data, %s.len, %s);")
+          | _ -> assert false
+        in
+        sail_kill ~prefix:"  " ~suffix:";" (sgen_ctyp_name vec_ctyp) "&%s" x
+        ^^ hardline
+        ^^ ksprintf string "  internal_vector_init_%s(&%s, %s);" (sgen_ctyp_name vec_ctyp) x len
+        ^^ hardline
+        ^^ ksprintf string "  %s" (conv x x (sgen_cval b))
     | I_funcall (x, extern_info, f, args) ->
         let special_extern = match extern_info with Extern _ -> true | Call -> false in
         let x =

@@ -24,6 +24,7 @@ skip_tests = {
     "hex_bits_backwards",  # verilator bug (in CI, works with latest)
     "lib_dec_bits",  # todo
     "config_vec_list",  # unknown length vectors
+    "bytes_le",  # unknown length vectors
     "simple_while",  # loops
     "simple_while2",  # loops
     "simple_while3",  # loops

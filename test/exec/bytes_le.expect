@@ -1,0 +1,15 @@
+v[0] = 0x78
+v[3] = 0x12
+w2 = 0x12345678
+byte 0 = 0xAB
+last byte = 0xAB
+round trip = 0xAB
+byte 0 = 0xEF
+last byte = 0xCD
+round trip = 0xCDEF
+byte 0 = 0xEF
+last byte = 0x01
+round trip = 0x0123456789ABCDEF
+byte 0 = 0xEF
+last byte = 0xFE
+round trip = 0xFEDCBA98765432100123456789ABCDEF
