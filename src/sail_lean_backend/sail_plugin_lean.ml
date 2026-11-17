@@ -261,6 +261,9 @@ let file_to_module (filename : string) =
 
 let interface_module interface_v = if interface_v = 1 then "ConcurrencyInterfaceV1" else "ArchSem"
 
+(* NB: once we don't need the legacy do-elaborator there's a workaround in the pretty-printer we
+   can remove. *)
+
 let file_prelude version namespace =
   let non_computable = if !opt_lean_noncomputable then "noncomputable section\n" else "" in
   Printf.sprintf
@@ -448,7 +451,8 @@ let output (out_name : string) symbols env effect_info ({ defs; _ } as ast : Lib
           import_sets
       in
 
-      (import_files, Util.butlast import_refs, Util.last import_refs)
+      (* Import everything in the main file, rather than just the last Sail file's dependencies *)
+      (import_files, Util.butlast import_refs, Util.butlast import_files (*Util.last import_refs*))
     )
   in
   let ctx = start_lean_output interface_v out_name files import_sets main_import_set default_sail_dir in
